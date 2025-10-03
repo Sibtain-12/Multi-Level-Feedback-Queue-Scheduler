@@ -129,6 +129,10 @@ The program displays:
   - Aging: Process waits ≥15 time units → Move to higher queue
   - Priority Boosting: Every 50 time units, all processes → Q0
 
+**Preemption:**
+  - Higher priority queue has work → Preempt lower priority process
+  - Preempted process returns to its current queue
+
 ## Performance Metrics
 
 | Metric               | Formula                         | Description              | Lower/Higher is Better |
