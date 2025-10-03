@@ -22,7 +22,7 @@ This project implements an advanced **Multilevel Feedback Queue (MLFQ)** CPU sch
 ## Project Structure
 ```
 mlfq_scheduler/
-├── mlfq_scheduler.cpp   # Main source code (COMPLETE IMPLEMENTATION)
+├── mlfq_scheduler.cpp   # Main source code
 ├── config.txt           # Configuration file for queue parameters
 ├── sample_input.txt     # Sample input with 6 processes
 ├── mlfq_extreme.txt     # Test case where MLFQ excels
