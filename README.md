@@ -1,4 +1,4 @@
-# Multilevel Feedback Queue (MLFQ) Scheduler
+# Multi-Level Feedback Queue (MLFQ) Scheduler
 
 ## Overview
 This project implements an advanced **Multilevel Feedback Queue (MLFQ)** CPU scheduling algorithm with configurable parameters, aging mechanism, priority boosting, and comparative analysis with other scheduling algorithms (Round Robin, FCFS, SJF).
