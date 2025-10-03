@@ -50,10 +50,17 @@ When prompted:
 
 ### 2. With Custom Configuration
 ```./mlfq_scheduler sample_input.txt -c```
+
+This loads parameters from `config.txt`
+
+### 3. Interactive Mode (Manual Input)
+```./mlfq_scheduler```
+
 Then enter process details manually when prompted.
 
 ### 4. Test MLFQ Advantage
 ```./mlfq_scheduler mlfq_extreme.txt```
+
 Press `y` for comparative analysis to see MLFQ outperform other algorithms!
 
 ## Input File Format
