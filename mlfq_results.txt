@@ -1,0 +1,15 @@
+MLFQ Scheduler Results
+======================
+
+Configuration:
+Number of Queues: 3
+Q0: Round-Robin (TQ=4)
+Q1: Round-Robin (TQ=8)
+Q2: FCFS
+
+Performance Metrics:
+Average Turnaround Time: 14.5
+Average Waiting Time: 7.4
+Throughput: 0.140845
+CPU Utilization: 100%
+Context Switches: 26

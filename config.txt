@@ -1,0 +1,6 @@
+3
+4 8 0
+Round-Robin
+Round-Robin
+FCFS
+15 3 50
