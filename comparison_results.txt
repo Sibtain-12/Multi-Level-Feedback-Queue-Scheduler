@@ -2,7 +2,7 @@ Scheduling Algorithm Comparison
 ================================
 
 Algorithm	Avg TAT	Avg WT	Throughput	CPU Util%	Context Switches
-MLFQ	14.5	7.4	0.140845	100	26
-RR	19.4	12.3	0.140845	100	23
-FCFS	36	28.9	0.140845	100	10
-SJF	31.4	24.3	0.140845	100	10
+MLFQ	18.6667	10.8333	0.12766	100	12
+RR	26.6667	18.8333	0.12766	100	14
+FCFS	22	14.1667	0.12766	100	6
+SJF	19	11.1667	0.12766	100	6
