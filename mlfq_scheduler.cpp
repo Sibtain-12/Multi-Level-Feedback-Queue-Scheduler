@@ -11,19 +11,14 @@
 
 using namespace std;
 
-/*
- =======================================================
- MULTILEVEL FEEDBACK QUEUE (MLFQ) SCHEDULER
- =======================================================
-*/
-
 // ==================== PROCESS STRUCTURE ====================
 struct Process {
     int pid;
     int arrival;
     int burst;
     int remaining;
-    int priority;
+    int initial_priority;    // Initial priority (0=highest)
+    int priority;            // Current queue level
     int start_time;
     int completion;
     int time_in_current_quantum;
@@ -31,12 +26,13 @@ struct Process {
     bool started;
 
     Process() {}
-    Process(int pid_, int a, int b) {
+    Process(int pid_, int a, int b, int init_prio = 0) {
         pid = pid_; 
         arrival = a; 
         burst = b;
+        initial_priority = init_prio;
         remaining = b; 
-        priority = 0;
+        priority = init_prio;  // Start at initial priority
         start_time = -1; 
         completion = -1;
         time_in_current_quantum = 0;
@@ -46,15 +42,16 @@ struct Process {
     
     Process(const Process& other) {
         pid = other.pid;
-        arrival = other.arrival;  // Copy original arrival
-        burst = other.burst;      // Copy original burst
-        remaining = other.burst;  // Reset remaining to original burst
-        priority = 0;             // Reset to highest priority
-        start_time = -1;          // Reset start time
-        completion = -1;          // Reset completion
+        arrival = other.arrival;
+        burst = other.burst;
+        initial_priority = other.initial_priority;
+        remaining = other.burst;
+        priority = other.initial_priority;  // Start at initial priority
+        start_time = -1;
+        completion = -1;
         time_in_current_quantum = 0;
         time_in_queue = 0;
-        started = false;          // Reset started flag
+        started = false;
     }
 };
 
@@ -63,8 +60,10 @@ struct ProcessOriginal {
     int pid;
     int arrival;
     int burst;
+    int initial_priority;
     
-    ProcessOriginal(int p, int a, int b) : pid(p), arrival(a), burst(b) {}
+    ProcessOriginal(int p, int a, int b, int prio = 0) 
+        : pid(p), arrival(a), burst(b), initial_priority(prio) {}
 };
 
 // ==================== CONFIGURATION ====================
@@ -79,7 +78,7 @@ struct Config {
     Config() {
         num_queues = 3;
         time_quantum = {4, 8, 0};
-        algo_names = {"Round-Robin", "Round-Robin", "FCFS"};
+        algo_names = {"RR(TQ=4)", "RR(TQ=8)", "FCFS"};
         aging_threshold = 15;
         aging_check_interval = 3;
         boost_interval = 50;
@@ -154,7 +153,7 @@ private:
     vector<int> timeline_pid;
     vector<int> timeline_queue;
     Process* currently_running;
-    bool verbose_mode;  // verbose flag
+    bool verbose_mode;
     
 public:
     MLFQ_Scheduler(vector<Process>& procs, const Config& cfg) {
@@ -165,19 +164,26 @@ public:
         total_busy_time = 0;
         context_switches = 0;
         currently_running = nullptr;
-        verbose_mode = true;  // Default to verbose
+        verbose_mode = true;
     }
     
     void add_arrivals() {
         for (auto& p : all_processes) {
             if (p.arrival == current_time && !p.started && p.start_time == -1) {
-                p.priority = 0;
-                queues[0].push_back(&p);
+                // Validate and clamp initial priority to valid range
+                p.priority = min(p.initial_priority, config.num_queues - 1);
+                p.priority = max(0, p.priority);
                 
-                // Only print if verbose mode enabled
+                // Place in queue based on initial priority
+                queues[p.priority].push_back(&p);
+                
                 if (verbose_mode) {
                     cout << "Time " << current_time << ": Process P" << p.pid 
-                         << " arrived -> Q0\n";
+                         << " arrived -> Q" << p.priority;
+                    if (p.initial_priority > 0) {
+                        cout << " (initial priority: " << p.initial_priority << ")";
+                    }
+                    cout << "\n";
                 }
             }
         }
@@ -189,12 +195,20 @@ public:
                 Process* p = *it;
                 
                 if (p != currently_running && p->time_in_queue >= config.aging_threshold) {
-                    // Only print if verbose mode enabled
                     if (verbose_mode) {
                         cout << "Time " << current_time << ": Process P" << p->pid 
-                             << " promoted Q" << q << " -> Q" << (q-1) << " (Aging)\n";
+                             << " promoted Q" << q << " -> Q" << (q-1) << " (Aging)";
+                        
+                        // Show current state
+                        if (currently_running != nullptr) {
+                            cout << " [P" << currently_running->pid 
+                                 << " currently running in Q" << currently_running->priority << "]\n";
+                        } else {
+                            cout << " [Will get CPU time in Q" << (q-1) << "]\n";
+                        }
                     }
                     
+                    // Promote to higher priority queue
                     p->priority = q - 1;
                     p->time_in_queue = 0;
                     p->time_in_current_quantum = 0;
@@ -208,15 +222,26 @@ public:
     }
     
     void apply_priority_boost() {
-        // Only print if verbose mode enabled
         if (verbose_mode) {
-            cout << "Time " << current_time << ": PRIORITY BOOST - All processes moved to Q0\n";
+            cout << "\n" << string(60, '=') << "\n";
+            cout << "Time " << current_time 
+                 << ": PRIORITY BOOST - All processes reset to initial priority\n";
+            cout << string(60, '=') << "\n";
         }
         
         vector<Process*> all_waiting;
+        map<int, vector<int>> queue_movements;  // Track movements
+        
+        // Collect processes from all queues except Q0
         for (int q = 1; q < config.num_queues; q++) {
             for (auto p : queues[q]) {
-                p->priority = 0;
+                // Track where process is moving (for display)
+                if (p->initial_priority != q) {
+                    queue_movements[q].push_back(p->pid);
+                }
+                
+                // Reset to initial priority (respects original importance)
+                p->priority = p->initial_priority;
                 p->time_in_queue = 0;
                 p->time_in_current_quantum = 0;
                 all_waiting.push_back(p);
@@ -224,13 +249,43 @@ public:
             queues[q].clear();
         }
         
-        for (auto p : all_waiting) {
-            queues[0].push_back(p);
+        // Show detailed movements
+        if (verbose_mode) {
+            for (map<int, vector<int>>::iterator it = queue_movements.begin(); 
+                 it != queue_movements.end(); ++it) {
+                int from_queue = it->first;
+                vector<int>& pids = it->second;
+                
+                if (!pids.empty()) {
+                    cout << "  Q" << from_queue << " -> Reset: ";
+                    for (size_t i = 0; i < pids.size(); i++) {
+                        cout << "P" << pids[i];
+                        if (i < pids.size() - 1) cout << ", ";
+                    }
+                    cout << "\n";
+                }
+            }
         }
         
-        if (currently_running != nullptr && currently_running->priority > 0) {
-            currently_running->priority = 0;
+        // Place processes in their initial priority queues
+        for (size_t i = 0; i < all_waiting.size(); i++) {
+            queues[all_waiting[i]->priority].push_back(all_waiting[i]);
+        }
+        
+        // Reset currently running process if below initial priority
+        if (currently_running != nullptr && 
+            currently_running->priority > currently_running->initial_priority) {
+            if (verbose_mode) {
+                cout << "  Running: P" << currently_running->pid 
+                     << " reset from Q" << currently_running->priority 
+                     << " to Q" << currently_running->initial_priority << "\n";
+            }
+            currently_running->priority = currently_running->initial_priority;
             currently_running->time_in_current_quantum = 0;
+        }
+        
+        if (verbose_mode) {
+            cout << string(60, '=') << "\n\n";
         }
     }
     
@@ -263,12 +318,12 @@ public:
     }
     
     void run(bool verbose = true) {
-        verbose_mode = verbose;  // Store verbose flag
+        verbose_mode = verbose;
         
         if (verbose_mode) {
-            cout << "\n========================\n";
+            cout << "\n========================================\n";
             cout << "MLFQ SCHEDULER \n";
-            cout << "==========================\n";
+            cout << "========================================\n";
             config.display();
             cout << "========================================\n\n";
         }
@@ -276,6 +331,7 @@ public:
         while (completed < all_processes.size()) {
             add_arrivals();
             
+            // Remove completed processes
             for (int q = 0; q < config.num_queues; q++) {
                 queues[q].erase(
                     remove_if(queues[q].begin(), queues[q].end(),
@@ -292,13 +348,23 @@ public:
                 apply_priority_boost();
             }
             
+            // Check for preemption
             if (currently_running != nullptr && currently_running->remaining > 0) {
                 int running_queue = currently_running->priority;
                 
                 if (should_preempt(running_queue)) {
                     if (verbose_mode) {
                         cout << "Time " << current_time << ": Process P" << currently_running->pid 
-                             << " preempted in Q" << running_queue << "\n";
+                             << " preempted in Q" << running_queue;
+                        
+                        // Show what will run next
+                        int next_queue = get_highest_priority_queue();
+                        if (next_queue != -1 && !queues[next_queue].empty()) {
+                            cout << " -> P" << queues[next_queue].front()->pid 
+                                 << " will run in Q" << next_queue << "\n";
+                        } else {
+                            cout << "\n";
+                        }
                     }
                     queues[running_queue].push_front(currently_running);
                     currently_running = nullptr;
@@ -306,10 +372,12 @@ public:
                 }
             }
             
+            // Get next process if none running
             if (currently_running == nullptr || currently_running->remaining == 0) {
                 int active_queue = get_highest_priority_queue();
                 
                 if (active_queue == -1) {
+                    // CPU idle
                     bool has_future = false;
                     int next_time = current_time + 1;
                     
@@ -321,6 +389,9 @@ public:
                     }
                     
                     if (has_future) {
+                        if (verbose_mode) {
+                            cout << "Time " << current_time << ": CPU Idle (waiting for arrivals)\n";
+                        }
                         timeline_pid.push_back(0);
                         timeline_queue.push_back(-1);
                         current_time++;
@@ -337,11 +408,23 @@ public:
                     currently_running->started = true;
                     currently_running->start_time = current_time;
                     context_switches++;
+                    
+                    if (verbose_mode) {
+                        cout << "Time " << current_time << ": Process P" << currently_running->pid 
+                             << " starts execution in Q" << active_queue 
+                             << " (first time)\n";
+                    }
                 } else {
                     context_switches++;
+                    
+                    if (verbose_mode) {
+                        cout << "Time " << current_time << ": Process P" << currently_running->pid 
+                             << " resumes execution in Q" << active_queue << "\n";
+                    }
                 }
             }
             
+            // Execute for 1 time unit
             timeline_pid.push_back(currently_running->pid);
             timeline_queue.push_back(currently_running->priority);
             
@@ -351,26 +434,79 @@ public:
             
             update_waiting_times();
             
+            // Check for completion
             if (currently_running->remaining == 0) {
                 currently_running->completion = current_time + 1;
                 completed++;
+                
                 if (verbose_mode) {
                     cout << "Time " << (current_time + 1) << ": Process P" << currently_running->pid 
-                         << " completed in Q" << currently_running->priority << "\n";
+                         << " completed in Q" << currently_running->priority;
+                    
+                    // Show what will run next
+                    int next_queue = get_highest_priority_queue();
+                    if (next_queue != -1 && !queues[next_queue].empty()) {
+                        cout << " -> P" << queues[next_queue].front()->pid 
+                             << " will run next in Q" << next_queue << "\n";
+                    } else if (completed < all_processes.size()) {
+                        // Check if there are future arrivals
+                        bool has_future = false;
+                        for (auto& p : all_processes) {
+                            if (p.arrival > current_time + 1 && p.remaining > 0) {
+                                has_future = true;
+                                break;
+                            }
+                        }
+                        if (has_future) {
+                            cout << " -> CPU will be idle\n";
+                        } else {
+                            cout << "\n";
+                        }
+                    } else {
+                        cout << " -> All processes completed\n";
+                    }
                 }
                 currently_running = nullptr;
             }
+            // Check if quantum exhausted (demotion)
             else if (config.time_quantum[currently_running->priority] > 0 && 
                      currently_running->time_in_current_quantum >= config.time_quantum[currently_running->priority]) {
                 
                 int old_queue = currently_running->priority;
                 
+                // Demote to lower priority queue (MLFQ feedback)
                 if (currently_running->priority < config.num_queues - 1) {
                     currently_running->priority++;
+                    
                     if (verbose_mode) {
                         cout << "Time " << (current_time + 1) << ": Process P" << currently_running->pid 
                              << " demoted Q" << old_queue << " -> Q" << currently_running->priority 
-                             << " (Quantum exhausted)\n";
+                             << " (Quantum exhausted)";
+                        
+                        // Show what will run next
+                        int next_queue = get_highest_priority_queue();
+                        if (next_queue != -1 && !queues[next_queue].empty()) {
+                            cout << " -> P" << queues[next_queue].front()->pid 
+                                 << " will run in Q" << next_queue << "\n";
+                        } else {
+                            cout << " -> P" << currently_running->pid 
+                                 << " continues in Q" << currently_running->priority << "\n";
+                        }
+                    }
+                } else {
+                    // Already at lowest queue
+                    if (verbose_mode) {
+                        cout << "Time " << (current_time + 1) << ": Process P" << currently_running->pid 
+                             << " quantum exhausted in Q" << old_queue << " (stays in Q" << old_queue << ")";
+                        
+                        // Show what will run next
+                        if (!queues[old_queue].empty()) {
+                            cout << " -> P" << queues[old_queue].front()->pid 
+                                 << " will run in Q" << old_queue << "\n";
+                        } else {
+                            cout << " -> P" << currently_running->pid 
+                                 << " continues in Q" << old_queue << "\n";
+                        }
                     }
                 }
                 
@@ -430,20 +566,20 @@ public:
         }
         cout << "\n";
         
+        cout << "Process-wise Metrics:\n";
+        cout << "PID\tArrival\tBurst\tInitPrio\tStart\tCompletion\tTAT\tWT\n";
+        cout << "---\t-------\t-----\t--------\t-----\t----------\t---\t--\n";
+        
         double total_turnaround = 0.0, total_waiting = 0.0;
         int last_completion = 0;
-        
-        cout << "Process-wise Metrics:\n";
-        cout << "PID\tArrival\tBurst\tStart\tCompletion\tTurnaround\tWaiting\n";
-        cout << "---\t-------\t-----\t-----\t----------\t----------\t-------\n";
         
         for (auto& p : all_processes) {
             int tat = p.completion - p.arrival;
             int wt = tat - p.burst;
             
             cout << p.pid << "\t" << p.arrival << "\t" << p.burst << "\t"
-                 << p.start_time << "\t" << p.completion << "\t\t"
-                 << tat << "\t\t" << wt << "\n";
+                 << p.initial_priority << "\t\t" << p.start_time << "\t" 
+                 << p.completion << "\t\t" << tat << "\t" << wt << "\n";
             
             total_turnaround += tat;
             total_waiting += wt;
@@ -548,10 +684,8 @@ public:
     }
 };
 
-
 // ==================== COMPARISON SCHEDULERS ====================
 
-// Round Robin Scheduler
 class RR_Scheduler {
 private:
     vector<Process> processes;
@@ -579,7 +713,6 @@ public:
                 next_arrival++;
             }
             
-            // Get next process if none running
             if (currently_running == nullptr || currently_running->remaining == 0) {
                 if (ready_queue.empty()) {
                     current_time++;
@@ -594,29 +727,25 @@ public:
                     currently_running->started = true;
                     currently_running->start_time = current_time;
                 }
-                context_switches++;  
+                context_switches++;
             }
             
-            // Execute 1 time unit at a time
             currently_running->remaining--;
             quantum_used++;
             current_time++;
             total_busy_time++;
             
-            // Check for completion
             if (currently_running->remaining == 0) {
                 currently_running->completion = current_time;
                 completed++;
                 currently_running = nullptr;
             }
-            // Check if quantum exhausted
             else if (quantum_used >= time_quantum) {
                 ready_queue.push_back(currently_running);
                 currently_running = nullptr;
             }
         }
         
-        // Calculate metrics
         Metrics m;
         double total_tat = 0, total_wt = 0;
         int last_completion = 0;
@@ -637,7 +766,6 @@ public:
     }
 };
 
-// FCFS Scheduler
 class FCFS_Scheduler {
 private:
     vector<Process> processes;
@@ -686,7 +814,6 @@ public:
     }
 };
 
-// SJF Scheduler
 class SJF_Scheduler {
 private:
     vector<Process> processes;
@@ -758,12 +885,11 @@ void run_comparative_analysis(const vector<ProcessOriginal>& original_data, cons
     cout << "========================================\n\n";
     cout << "Comparing MLFQ with other scheduling algorithms...\n\n";
     
-    // Create fresh processes for each scheduler from original data
-    
     // Run MLFQ
     vector<Process> mlfq_procs;
-    for (auto& orig : original_data) {
-        mlfq_procs.emplace_back(orig.pid, orig.arrival, orig.burst);
+    for (size_t i = 0; i < original_data.size(); i++) {
+        mlfq_procs.emplace_back(original_data[i].pid, original_data[i].arrival, 
+                                original_data[i].burst, original_data[i].initial_priority);
     }
     MLFQ_Scheduler mlfq(mlfq_procs, config);
     mlfq.run(false);
@@ -771,24 +897,27 @@ void run_comparative_analysis(const vector<ProcessOriginal>& original_data, cons
     
     // Run Round Robin
     vector<Process> rr_procs;
-    for (auto& orig : original_data) {
-        rr_procs.emplace_back(orig.pid, orig.arrival, orig.burst);
+    for (size_t i = 0; i < original_data.size(); i++) {
+        rr_procs.emplace_back(original_data[i].pid, original_data[i].arrival, 
+                              original_data[i].burst, original_data[i].initial_priority);
     }
     RR_Scheduler rr(rr_procs, 4);
     Metrics rr_metrics = rr.run();
     
     // Run FCFS
     vector<Process> fcfs_procs;
-    for (auto& orig : original_data) {
-        fcfs_procs.emplace_back(orig.pid, orig.arrival, orig.burst);
+    for (size_t i = 0; i < original_data.size(); i++) {
+        fcfs_procs.emplace_back(original_data[i].pid, original_data[i].arrival, 
+                                original_data[i].burst, original_data[i].initial_priority);
     }
     FCFS_Scheduler fcfs(fcfs_procs);
     Metrics fcfs_metrics = fcfs.run();
     
     // Run SJF
     vector<Process> sjf_procs;
-    for (auto& orig : original_data) {
-        sjf_procs.emplace_back(orig.pid, orig.arrival, orig.burst);
+    for (size_t i = 0; i < original_data.size(); i++) {
+        sjf_procs.emplace_back(original_data[i].pid, original_data[i].arrival, 
+                               original_data[i].burst, original_data[i].initial_priority);
     }
     SJF_Scheduler sjf(sjf_procs);
     Metrics sjf_metrics = sjf.run();
@@ -838,30 +967,36 @@ void run_comparative_analysis(const vector<ProcessOriginal>& original_data, cons
     cout << "ANALYSIS\n";
     cout << "========================================\n";
     
-    vector<pair<string, double>> tat_vals = {
-        {"MLFQ", mlfq_metrics.avg_turnaround},
-        {"RR", rr_metrics.avg_turnaround},
-        {"FCFS", fcfs_metrics.avg_turnaround},
-        {"SJF", sjf_metrics.avg_turnaround}
-    };
+    vector<pair<string, double>> tat_vals;
+    tat_vals.push_back(make_pair("MLFQ", mlfq_metrics.avg_turnaround));
+    tat_vals.push_back(make_pair("RR", rr_metrics.avg_turnaround));
+    tat_vals.push_back(make_pair("FCFS", fcfs_metrics.avg_turnaround));
+    tat_vals.push_back(make_pair("SJF", sjf_metrics.avg_turnaround));
     
-    auto best_tat = *min_element(tat_vals.begin(), tat_vals.end(),
-        [](auto& a, auto& b) { return a.second < b.second; });
+    pair<string, double> best_tat = tat_vals[0];
+    for (size_t i = 1; i < tat_vals.size(); i++) {
+        if (tat_vals[i].second < best_tat.second) {
+            best_tat = tat_vals[i];
+        }
+    }
     
-    vector<pair<string, double>> wt_vals = {
-        {"MLFQ", mlfq_metrics.avg_waiting},
-        {"RR", rr_metrics.avg_waiting},
-        {"FCFS", fcfs_metrics.avg_waiting},
-        {"SJF", sjf_metrics.avg_waiting}
-    };
+    vector<pair<string, double>> wt_vals;
+    wt_vals.push_back(make_pair("MLFQ", mlfq_metrics.avg_waiting));
+    wt_vals.push_back(make_pair("RR", rr_metrics.avg_waiting));
+    wt_vals.push_back(make_pair("FCFS", fcfs_metrics.avg_waiting));
+    wt_vals.push_back(make_pair("SJF", sjf_metrics.avg_waiting));
     
-    auto best_wt = *min_element(wt_vals.begin(), wt_vals.end(),
-        [](auto& a, auto& b) { return a.second < b.second; });
+    pair<string, double> best_wt = wt_vals[0];
+    for (size_t i = 1; i < wt_vals.size(); i++) {
+        if (wt_vals[i].second < best_wt.second) {
+            best_wt = wt_vals[i];
+        }
+    }
     
     cout << "\nBest Average Turnaround Time: " << best_tat.first << " (" << best_tat.second << ")\n";
     cout << "Best Average Waiting Time: " << best_wt.first << " (" << best_wt.second << ")\n";
     
-    // Save comparison to file
+    // Save comparison
     ofstream fout("comparison_results.txt");
     fout << "Scheduling Algorithm Comparison\n";
     fout << "================================\n\n";
@@ -897,7 +1032,7 @@ int main(int argc, char** argv) {
         cout << "\nUsing default configuration\n";
     }
     
-    // Store original data separately
+    // Store original data
     vector<ProcessOriginal> original_data;
     
     string infile = (argc >= 2) ? argv[1] : "";
@@ -906,11 +1041,12 @@ int main(int argc, char** argv) {
         int N;
         cout << "\nEnter number of processes: ";
         cin >> N;
-        cout << "Enter PID, Arrival, Burst for each process:\n";
+        cout << "Enter PID, Arrival, Burst, InitialPriority for each process:\n";
+        cout << "(InitialPriority: 0=highest, " << (config.num_queues-1) << "=lowest)\n";
         for (int i = 0; i < N; i++) {
-            int pid, a, b;
-            cin >> pid >> a >> b;
-            original_data.emplace_back(pid, a, b);
+            int pid, a, b, prio;
+            cin >> pid >> a >> b >> prio;
+            original_data.push_back(ProcessOriginal(pid, a, b, prio));
         }
     } else {
         ifstream fin(infile);
@@ -921,9 +1057,9 @@ int main(int argc, char** argv) {
         int N;
         fin >> N;
         for (int i = 0; i < N; i++) {
-            int pid, a, b;
-            fin >> pid >> a >> b;
-            original_data.emplace_back(pid, a, b);
+            int pid, a, b, prio;
+            fin >> pid >> a >> b >> prio;
+            original_data.push_back(ProcessOriginal(pid, a, b, prio));
         }
         fin.close();
         cout << "\nProcesses loaded from: " << infile << "\n";
@@ -936,8 +1072,9 @@ int main(int argc, char** argv) {
     
     // Create processes for MLFQ
     vector<Process> processes;
-    for (auto& orig : original_data) {
-        processes.emplace_back(orig.pid, orig.arrival, orig.burst);
+    for (size_t i = 0; i < original_data.size(); i++) {
+        processes.push_back(Process(original_data[i].pid, original_data[i].arrival, 
+                                    original_data[i].burst, original_data[i].initial_priority));
     }
     
     sort(processes.begin(), processes.end(), 
